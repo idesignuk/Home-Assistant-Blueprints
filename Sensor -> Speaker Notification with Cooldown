@@ -1,20 +1,21 @@
 blueprint:
-  name: Sensor -> Nabu Casa TTS (Google Cast Announce) with Cooldown
+  name: Sensor -> Google Assistant Announce with Cooldown
   description: >
-    Speak a message on Google Cast speakers when a sensor indicates occupancy,
-    using announcement mode so playback resumes automatically, with cooldown.
+    Announce a message on Google speakers when occupancy is detected,
+    using Google Assistant SDK notifications which automatically resume
+    current playback (Spotify, BBC, etc.), with cooldown support.
   domain: automation
 
   input:
     trigger_sensor:
       name: Sensor to monitor
-      description: Occupancy or other sensor that triggers the notification.
+      description: Occupancy or motion sensor to trigger the announcement.
       selector:
         entity: {}
 
     media_player:
-      name: Speaker(s)
-      description: Google Cast speakers for the spoken notification.
+      name: Google Cast Speaker(s)
+      description: Speakers where announcements will be made.
       selector:
         entity:
           domain: media_player
@@ -32,9 +33,9 @@ blueprint:
           step: 1
 
     tts_message:
-      name: TTS Message
-      description: Message to speak when triggered (templating allowed)
-      default: "The {{ trigger.to_state.name }} has been triggered."
+      name: Announcement Message
+      description: Message to speak (templating allowed).
+      default: "Movement detected by {{ trigger.to_state.name }}."
       selector:
         text: {}
 
@@ -42,14 +43,12 @@ mode: single
 max_exceeded: silent
 
 variables:
-  cooldown_minutes: !input cooldown_minutes
-  cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
+  cooldown_secs: "{{ ( !input cooldown_minutes | int ) * 60 }}"
 
 trigger:
   - platform: state
     entity_id: !input trigger_sensor
 
-# State must imply occupancy AND cooldown must be over
 condition:
   - condition: template
     value_template: >
@@ -62,14 +61,12 @@ condition:
         {% if lt is none %}
           true
         {% else %}
-          {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs }}
+          {{ (now().timestamp() - as_timestamp(lt)) > cooldown_secs }}
         {% endif %}
       {% endif %}
 
 action:
-  - service: tts.cloud_say
-    target:
-      entity_id: !input media_player
+  - service: notify.google_assistant_sdk
     data:
       message: !input tts_message
-      announce: true
+
