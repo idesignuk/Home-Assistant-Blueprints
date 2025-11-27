@@ -1,9 +1,9 @@
 blueprint:
   name: Sensor -> Google Assistant Announce with Cooldown
   description: >
-    Announce a message on Google speakers when occupancy is detected,
-    using Google Assistant SDK notifications which automatically resume
-    current playback (Spotify, BBC, etc.), with cooldown support.
+    Announce a message on Google Assistant speakers when occupancy is detected,
+    using Google Assistant SDK broadcasts which automatically resume any
+    current playback, with a cooldown between announcements.
   domain: automation
 
   input:
@@ -14,8 +14,10 @@ blueprint:
         entity: {}
 
     media_player:
-      name: Google Cast Speaker(s)
-      description: Speakers where announcements will be made.
+      name: (Unused) Google Cast Speaker(s)
+      description: >
+        Not used by this blueprint (broadcast goes to Google Assistant speakers
+        via SDK). Kept for future extension.
       selector:
         entity:
           domain: media_player
@@ -23,7 +25,7 @@ blueprint:
 
     cooldown_minutes:
       name: Cooldown (minutes)
-      description: Minimum time between announcements
+      description: Minimum time between announcements.
       default: 5
       selector:
         number:
@@ -43,7 +45,8 @@ mode: single
 max_exceeded: silent
 
 variables:
-  cooldown_secs: "{{ ( !input cooldown_minutes | int ) * 60 }}"
+  cooldown_minutes: !input cooldown_minutes
+  cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
 
 trigger:
   - platform: state
@@ -61,7 +64,7 @@ condition:
         {% if lt is none %}
           true
         {% else %}
-          {{ (now().timestamp() - as_timestamp(lt)) > cooldown_secs }}
+          {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs }}
         {% endif %}
       {% endif %}
 
@@ -69,4 +72,3 @@ action:
   - service: notify.google_assistant_sdk
     data:
       message: !input tts_message
-
