@@ -1,18 +1,17 @@
 blueprint:
-  name: Sensor -> Speaker Notification with Cooldown & Restore
+  name: Sensor -> Nabu Casa TTS with Cooldown & Restore
   description: >
-    Send a TTS notification to one or more speakers when a sensor is tripped,
-    with a cooldown period between alerts. If the speakers were already
-    playing audio, their previous playback and volume are restored afterwards.
+    Use Nabu Casa (Home Assistant Cloud) TTS to speak a message on one or more
+    speakers when a sensor is tripped, with a cooldown and automatic restore of
+    previous playback/volume.
   domain: automation
-  source_url: https://example.com/sensor_speaker_cooldown_restore
+
   input:
     trigger_sensor:
       name: Sensor to monitor
-      description: Binary sensor that triggers the notification (e.g. door, PIR).
+      description: Occupancy or other sensor that triggers the notification.
       selector:
-        entity:
-          domain: binary_sensor
+        entity: {}
 
     media_player:
       name: Speaker(s)
@@ -24,8 +23,7 @@ blueprint:
 
     cooldown_minutes:
       name: Cooldown (minutes)
-      description: >
-        Minimum time between spoken notifications for this automation.
+      description: Minimum time between spoken notifications for this automation.
       default: 5
       selector:
         number:
@@ -39,7 +37,9 @@ blueprint:
       name: TTS Message
       description: >
         Message to speak when the sensor is tripped.
-      default: "Warning: the sensor has been triggered."
+        You can use templates here, e.g.:
+        "The {{ trigger.to_state.name }} has been triggered."
+      default: "The {{ trigger.to_state.name }} has been triggered."
       selector:
         text: {}
 
@@ -56,30 +56,21 @@ blueprint:
           step: 0.05
           mode: slider
 
-    tts_service:
-      name: TTS Service
-      description: >
-        TTS service to use for speech (e.g. tts.google_translate_say,
-        tts.cloud_say, etc.).
-      default: tts.cloud_say
-      selector:
-        text: {}
-
 mode: single
 max_exceeded: silent
 
 variables:
   cooldown_minutes: !input cooldown_minutes
   cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
-  msg: !input tts_message
   vol: !input volume_level
-  players: !input media_player
-  tts_service: !input tts_service
 
 trigger:
+  # Binary-style sensors: off -> on, or any -> on
   - platform: state
     entity_id: !input trigger_sensor
     to: "on"
+
+  # Text-style occupancy sensors: Clear -> Detected, or any -> Detected
   - platform: state
     entity_id: !input trigger_sensor
     to: "Detected"
@@ -96,7 +87,7 @@ condition:
       {% endif %}
 
 action:
-  # Take a snapshot of the current state of the speaker(s) so we can restore it later.
+  # Snapshot current state of speaker(s) so we can restore later
   - service: media_player.snapshot
     target:
       entity_id: !input media_player
@@ -113,14 +104,14 @@ action:
             data:
               volume_level: "{{ vol | float }}"
 
-  # Speak the message using the chosen TTS service
-  - service: "{{ tts_service }}"
+  # Speak the message using Nabu Casa Cloud TTS
+  - service: tts.cloud_say
     target:
       entity_id: !input media_player
     data:
-      message: "{{ msg }}"
+      message: !input tts_message
 
-  # Wait for TTS to finish (speaker usually goes to idle/off after playing)
+  # Wait for TTS to finish (speakers usually go to idle/off)
   - wait_for_trigger:
       - platform: state
         entity_id: !input media_player
@@ -131,7 +122,7 @@ action:
     timeout: "00:00:20"
     continue_on_timeout: true
 
-  # Restore previous playback and volume on the speaker(s)
+  # Restore previous playback and volume
   - service: media_player.restore
     target:
       entity_id: !input media_player
