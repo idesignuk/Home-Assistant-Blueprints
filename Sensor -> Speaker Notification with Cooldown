@@ -1,0 +1,97 @@
+blueprint:
+  name: Sensor -> Speaker Notification with Cooldown
+  description: >
+    Send a notification to a speaker when a sensor is tripped, but do not
+    notify again until a cooldown period has passed.
+  domain: automation
+  source_url: https://example.com/sensor_speaker_cooldown
+  input:
+    trigger_sensor:
+      name: Sensor to monitor
+      description: Binary sensor that triggers the notification (e.g. door, PIR).
+      selector:
+        entity:
+          domain: binary_sensor
+
+    media_player:
+      name: Speaker
+      description: Media player / speaker to use for the spoken notification.
+      selector:
+        entity:
+          domain: media_player
+
+    cooldown_minutes:
+      name: Cooldown (minutes)
+      description: >
+        Minimum time between spoken notifications for this automation.
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: minutes
+          mode: slider
+          step: 1
+
+    tts_message:
+      name: TTS Message
+      description: >
+        Message to speak when the sensor is tripped.
+        (You can edit the automation later to make this dynamic if you like.)
+      default: "Warning: the sensor has been triggered."
+      selector:
+        text: {}
+
+    volume_level:
+      name: Volume (optional)
+      description: >
+        Volume to set on the speaker before speaking (0.0–1.0).
+        Leave empty to skip changing volume.
+      default:
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+          mode: slider
+
+mode: single
+
+variables:
+  cooldown_secs: !input cooldown_minutes
+  cooldown_secs: "{{ (cooldown_secs | int(0)) * 60 }}"
+  msg: !input tts_message
+  vol: !input volume_level
+
+trigger:
+  - platform: state
+    entity_id: !input trigger_sensor
+    from: "off"
+    to: "on"
+
+condition:
+  - condition: template
+    value_template: >
+      {% set lt = state_attr(this.entity_id, 'last_triggered') %}
+      {% if lt is none %}
+        true
+      {% else %}
+        {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs | int(0) }}
+      {% endif %}
+
+action:
+  - choose:
+      - conditions: "{{ vol is not none }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player
+            data:
+              volume_level: "{{ vol | float }}"
+
+  # Change tts.cloud_say to whatever TTS service you use (e.g. tts.google_translate_say)
+  - service: tts.cloud_say
+    target:
+      entity_id: !input media_player
+    data:
+      message: "{{ msg }}"
