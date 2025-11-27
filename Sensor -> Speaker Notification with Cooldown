@@ -1,10 +1,11 @@
 blueprint:
-  name: Sensor -> Speaker Notification with Cooldown
+  name: Sensor -> Speaker Notification with Cooldown & Restore
   description: >
-    Send a notification to a speaker when a sensor is tripped, but do not
-    notify again until a cooldown period has passed.
+    Send a TTS notification to one or more speakers when a sensor is tripped,
+    with a cooldown period between alerts. If the speakers were already
+    playing audio, their previous playback and volume are restored afterwards.
   domain: automation
-  source_url: https://example.com/sensor_speaker_cooldown
+  source_url: https://example.com/sensor_speaker_cooldown_restore
   input:
     trigger_sensor:
       name: Sensor to monitor
@@ -14,11 +15,12 @@ blueprint:
           domain: binary_sensor
 
     media_player:
-      name: Speaker
-      description: Media player / speaker to use for the spoken notification.
+      name: Speaker(s)
+      description: One or more speakers / media_players to use for the spoken notification.
       selector:
         entity:
           domain: media_player
+          multiple: true
 
     cooldown_minutes:
       name: Cooldown (minutes)
@@ -37,7 +39,6 @@ blueprint:
       name: TTS Message
       description: >
         Message to speak when the sensor is tripped.
-        (You can edit the automation later to make this dynamic if you like.)
       default: "Warning: the sensor has been triggered."
       selector:
         text: {}
@@ -45,7 +46,7 @@ blueprint:
     volume_level:
       name: Volume (optional)
       description: >
-        Volume to set on the speaker before speaking (0.0–1.0).
+        Volume to set on the speaker(s) before speaking (0.0–1.0).
         Leave empty to skip changing volume.
       default:
       selector:
@@ -55,13 +56,25 @@ blueprint:
           step: 0.05
           mode: slider
 
+    tts_service:
+      name: TTS Service
+      description: >
+        TTS service to use for speech (e.g. tts.google_translate_say,
+        tts.cloud_say, etc.).
+      default: tts.cloud_say
+      selector:
+        text: {}
+
 mode: single
+max_exceeded: silent
 
 variables:
-  cooldown_secs: !input cooldown_minutes
-  cooldown_secs: "{{ (cooldown_secs | int(0)) * 60 }}"
+  cooldown_minutes: !input cooldown_minutes
+  cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
   msg: !input tts_message
   vol: !input volume_level
+  players: !input media_player
+  tts_service: !input tts_service
 
 trigger:
   - platform: state
@@ -69,6 +82,7 @@ trigger:
     from: "off"
     to: "on"
 
+# Cooldown: only run if enough time has passed since last trigger
 condition:
   - condition: template
     value_template: >
@@ -76,10 +90,18 @@ condition:
       {% if lt is none %}
         true
       {% else %}
-        {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs | int(0) }}
+        {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs }}
       {% endif %}
 
 action:
+  # Take a snapshot of the current state of the speaker(s) so we can restore it later.
+  - service: media_player.snapshot
+    target:
+      entity_id: !input media_player
+    data:
+      with_group: true
+
+  # Optionally change volume for the TTS
   - choose:
       - conditions: "{{ vol is not none }}"
         sequence:
@@ -89,9 +111,27 @@ action:
             data:
               volume_level: "{{ vol | float }}"
 
-  # Change tts.cloud_say to whatever TTS service you use (e.g. tts.google_translate_say)
-  - service: tts.cloud_say
+  # Speak the message using the chosen TTS service
+  - service: "{{ tts_service }}"
     target:
       entity_id: !input media_player
     data:
       message: "{{ msg }}"
+
+  # Wait for TTS to finish (speaker usually goes to idle/off after playing)
+  - wait_for_trigger:
+      - platform: state
+        entity_id: !input media_player
+        to: "idle"
+      - platform: state
+        entity_id: !input media_player
+        to: "off"
+    timeout: "00:00:20"
+    continue_on_timeout: true
+
+  # Restore previous playback and volume on the speaker(s)
+  - service: media_player.restore
+    target:
+      entity_id: !input media_player
+    data:
+      with_group: true
