@@ -1,9 +1,8 @@
 blueprint:
-  name: Sensor -> Nabu Casa TTS with Cooldown & Restore
+  name: Sensor -> Nabu Casa TTS (Google Cast Announce) with Cooldown
   description: >
-    Use Nabu Casa (Home Assistant Cloud) TTS to speak a message on one or more
-    speakers when a sensor is tripped, with a cooldown and automatic restore of
-    previous playback/volume.
+    Speak a message on Google Cast speakers when a sensor indicates occupancy,
+    using announcement mode so playback resumes automatically, with cooldown.
   domain: automation
 
   input:
@@ -15,7 +14,7 @@ blueprint:
 
     media_player:
       name: Speaker(s)
-      description: One or more speakers / media_players to use for the spoken notification.
+      description: Google Cast speakers for the spoken notification.
       selector:
         entity:
           domain: media_player
@@ -23,38 +22,21 @@ blueprint:
 
     cooldown_minutes:
       name: Cooldown (minutes)
-      description: Minimum time between spoken notifications for this automation.
+      description: Minimum time between announcements
       default: 5
       selector:
         number:
           min: 0
           max: 1440
           unit_of_measurement: minutes
-          mode: slider
           step: 1
 
     tts_message:
       name: TTS Message
-      description: >
-        Message to speak when the sensor is tripped.
-        You can use templates here, e.g.:
-        "The {{ trigger.to_state.name }} has been triggered."
+      description: Message to speak when triggered (templating allowed)
       default: "The {{ trigger.to_state.name }} has been triggered."
       selector:
         text: {}
-
-    volume_level:
-      name: Volume (optional)
-      description: >
-        Volume to set on the speaker(s) before speaking (0.0–1.0).
-        Leave empty to skip changing volume.
-      default:
-      selector:
-        number:
-          min: 0
-          max: 1
-          step: 0.05
-          mode: slider
 
 mode: single
 max_exceeded: silent
@@ -62,69 +44,32 @@ max_exceeded: silent
 variables:
   cooldown_minutes: !input cooldown_minutes
   cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
-  vol: !input volume_level
 
 trigger:
-  # Binary-style sensors: off -> on, or any -> on
   - platform: state
     entity_id: !input trigger_sensor
-    to: "on"
 
-  # Text-style occupancy sensors: Clear -> Detected, or any -> Detected
-  - platform: state
-    entity_id: !input trigger_sensor
-    to: "Detected"
-
-# Cooldown: only run if enough time has passed since last trigger
+# State must imply occupancy AND cooldown must be over
 condition:
   - condition: template
     value_template: >
-      {% set lt = state_attr(this.entity_id, 'last_triggered') %}
-      {% if lt is none %}
-        true
+      {% set new = trigger.to_state.state | lower %}
+      {% set occupied = ['on', 'detected', 'motion', 'occupied', 'person'] %}
+      {% if new not in occupied %}
+        false
       {% else %}
-        {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs }}
+        {% set lt = state_attr(this.entity_id, 'last_triggered') %}
+        {% if lt is none %}
+          true
+        {% else %}
+          {{ (as_timestamp(now()) - as_timestamp(lt)) > cooldown_secs }}
+        {% endif %}
       {% endif %}
 
 action:
-  # Snapshot current state of speaker(s) so we can restore later
-  - service: media_player.snapshot
-    target:
-      entity_id: !input media_player
-    data:
-      with_group: true
-
-  # Optionally change volume for the TTS
-  - choose:
-      - conditions: "{{ vol is not none }}"
-        sequence:
-          - service: media_player.volume_set
-            target:
-              entity_id: !input media_player
-            data:
-              volume_level: "{{ vol | float }}"
-
-  # Speak the message using Nabu Casa Cloud TTS
   - service: tts.cloud_say
     target:
       entity_id: !input media_player
     data:
       message: !input tts_message
-
-  # Wait for TTS to finish (speakers usually go to idle/off)
-  - wait_for_trigger:
-      - platform: state
-        entity_id: !input media_player
-        to: "idle"
-      - platform: state
-        entity_id: !input media_player
-        to: "off"
-    timeout: "00:00:20"
-    continue_on_timeout: true
-
-  # Restore previous playback and volume
-  - service: media_player.restore
-    target:
-      entity_id: !input media_player
-    data:
-      with_group: true
+      announce: true
