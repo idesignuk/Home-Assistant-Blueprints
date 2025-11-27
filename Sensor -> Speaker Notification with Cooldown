@@ -1,9 +1,9 @@
 blueprint:
-  name: Sensor -> Google Assistant Announce with Cooldown
+  name: Sensor -> Nabu Casa TTS with Cooldown & Resume (Single Speaker)
   description: >
-    Announce a message on Google Assistant speakers when occupancy is detected,
-    using Google Assistant SDK broadcasts which automatically resume any
-    current playback, with a cooldown between announcements.
+    When a sensor indicates occupancy, announce a message via Nabu Casa TTS on
+    one Google Cast speaker, then best-effort resume whatever was playing on
+    that speaker (e.g. BBC Sounds, Spotify) and restore its volume.
   domain: automation
 
   input:
@@ -14,14 +14,11 @@ blueprint:
         entity: {}
 
     media_player:
-      name: (Unused) Google Cast Speaker(s)
-      description: >
-        Not used by this blueprint (broadcast goes to Google Assistant speakers
-        via SDK). Kept for future extension.
+      name: Speaker
+      description: Single Google Cast speaker / display to announce on.
       selector:
         entity:
           domain: media_player
-          multiple: true
 
     cooldown_minutes:
       name: Cooldown (minutes)
@@ -41,17 +38,43 @@ blueprint:
       selector:
         text: {}
 
+    volume_level:
+      name: TTS Volume (optional)
+      description: >
+        Volume to set on the speaker before speaking (0.0–1.0).
+        Leave empty to keep the current volume.
+      default:
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+          mode: slider
+
 mode: single
 max_exceeded: silent
 
 variables:
   cooldown_minutes: !input cooldown_minutes
   cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
+  player: !input media_player
+
+  # Snapshot of previous state/attributes for this one speaker
+  prev_state: "{{ states(player) }}"
+  prev_app_name: "{{ state_attr(player, 'app_name') }}"
+  prev_media_id: "{{ state_attr(player, 'media_content_id') }}"
+  prev_media_type: "{{ state_attr(player, 'media_content_type') }}"
+  prev_volume: "{{ state_attr(player, 'volume_level') }}"
+
+  tts_vol: !input volume_level
 
 trigger:
   - platform: state
     entity_id: !input trigger_sensor
 
+# Only continue when:
+# 1) The new state implies occupancy
+# 2) The cooldown has passed
 condition:
   - condition: template
     value_template: >
@@ -69,6 +92,57 @@ condition:
       {% endif %}
 
 action:
-  - service: notify.google_assistant_sdk
+  # Optionally change volume for the TTS
+  - choose:
+      - conditions: "{{ tts_vol is not none }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player
+            data:
+              volume_level: "{{ tts_vol | float }}"
+
+  # Speak the message using Nabu Casa Cloud TTS
+  - service: tts.cloud_say
+    target:
+      entity_id: !input media_player
     data:
       message: !input tts_message
+
+  # Wait for TTS to finish (speaker usually goes to idle/off/paused)
+  - wait_for_trigger:
+      - platform: state
+        entity_id: !input media_player
+        to: "idle"
+      - platform: state
+        entity_id: !input media_player
+        to: "off"
+      - platform: state
+        entity_id: !input media_player
+        to: "paused"
+    timeout: "00:00:20"
+    continue_on_timeout: true
+
+  # Restore previous volume if we had one
+  - choose:
+      - conditions: "{{ prev_volume is not none }}"
+        sequence:
+          - service: media_player.volume_set
+            target:
+              entity_id: !input media_player
+            data:
+              volume_level: "{{ prev_volume | float }}"
+
+  # Best-effort resume of previous stream:
+  # If it was playing and we have a media_content_id, ask the cast device to play it again.
+  - choose:
+      - conditions: "{{ prev_state == 'playing' and prev_media_id is not none }}"
+        sequence:
+          - service: media_player.play_media
+            target:
+              entity_id: !input media_player
+            data:
+              media_content_id: "{{ prev_media_id }}"
+              media_content_type: >
+                {{ prev_media_type if prev_media_type is not none else 'music' }}
+
