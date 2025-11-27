@@ -1,28 +1,37 @@
 blueprint:
-  name: Sensor -> Nabu Casa TTS with Cooldown & Resume (Single Speaker)
+  name: Sensor -> TTS on Speakers + Mobile Push (with Cooldown)
   description: >
-    When a sensor indicates occupancy, announce a message via Nabu Casa TTS on
-    one Google Cast speaker, then best-effort resume whatever was playing on
-    that speaker (e.g. BBC Sounds, Spotify) and restore its volume.
+    When a sensor indicates occupancy, speak a TTS message on selected
+    speakers and send notifications to selected phones. Includes a cooldown
+    so it doesn't fire too often.
   domain: automation
 
   input:
     trigger_sensor:
       name: Sensor to monitor
-      description: Occupancy or motion sensor to trigger the announcement.
+      description: Occupancy or motion sensor to trigger the alert.
       selector:
         entity: {}
 
-    media_player:
-      name: Speaker
-      description: Single Google Cast speaker / display to announce on.
+    speakers:
+      name: Speaker(s)
+      description: One or more speakers / media_players to play the TTS.
       selector:
         entity:
           domain: media_player
+          multiple: true
+
+    notify_devices:
+      name: Phones to notify
+      description: Phones with the Home Assistant app (mobile_app) to send push alerts to.
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
 
     cooldown_minutes:
       name: Cooldown (minutes)
-      description: Minimum time between announcements.
+      description: Minimum time between alerts.
       default: 5
       selector:
         number:
@@ -32,24 +41,25 @@ blueprint:
           step: 1
 
     tts_message:
-      name: Announcement Message
-      description: Message to speak (templating allowed).
+      name: TTS Message
+      description: Message to speak on the speakers (templating allowed).
       default: "Movement detected by {{ trigger.to_state.name }}."
       selector:
         text: {}
 
-    volume_level:
-      name: TTS Volume (optional)
-      description: >
-        Volume to set on the speaker before speaking (0.0–1.0).
-        Leave empty to keep the current volume.
-      default:
+    mobile_title:
+      name: Mobile notification title
+      description: Title for the push notification.
+      default: "Home Assistant alert"
       selector:
-        number:
-          min: 0
-          max: 1
-          step: 0.05
-          mode: slider
+        text: {}
+
+    mobile_message:
+      name: Mobile notification body
+      description: Message body for the push notification (templating allowed).
+      default: "Movement detected by {{ trigger.to_state.name }}."
+      selector:
+        text: {}
 
 mode: single
 max_exceeded: silent
@@ -57,24 +67,14 @@ max_exceeded: silent
 variables:
   cooldown_minutes: !input cooldown_minutes
   cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
-  player: !input media_player
-
-  # Snapshot of previous state/attributes for this one speaker
-  prev_state: "{{ states(player) }}"
-  prev_app_name: "{{ state_attr(player, 'app_name') }}"
-  prev_media_id: "{{ state_attr(player, 'media_content_id') }}"
-  prev_media_type: "{{ state_attr(player, 'media_content_type') }}"
-  prev_volume: "{{ state_attr(player, 'volume_level') }}"
-
-  tts_vol: !input volume_level
 
 trigger:
   - platform: state
     entity_id: !input trigger_sensor
 
 # Only continue when:
-# 1) The new state implies occupancy
-# 2) The cooldown has passed
+# 1) New state implies occupancy (on/detected/motion/etc.)
+# 2) Cooldown has elapsed since last run
 condition:
   - condition: template
     value_template: >
@@ -92,57 +92,21 @@ condition:
       {% endif %}
 
 action:
-  # Optionally change volume for the TTS
-  - choose:
-      - conditions: "{{ tts_vol is not none }}"
-        sequence:
-          - service: media_player.volume_set
-            target:
-              entity_id: !input media_player
-            data:
-              volume_level: "{{ tts_vol | float }}"
-
-  # Speak the message using Nabu Casa Cloud TTS
+  # 1) Speak TTS on the selected speakers
   - service: tts.cloud_say
     target:
-      entity_id: !input media_player
+      entity_id: !input speakers
     data:
       message: !input tts_message
 
-  # Wait for TTS to finish (speaker usually goes to idle/off/paused)
-  - wait_for_trigger:
-      - platform: state
-        entity_id: !input media_player
-        to: "idle"
-      - platform: state
-        entity_id: !input media_player
-        to: "off"
-      - platform: state
-        entity_id: !input media_player
-        to: "paused"
-    timeout: "00:00:20"
-    continue_on_timeout: true
+  # 2) Send push notifications to the selected phones
+  - repeat:
+      for_each: !input notify_devices
+      sequence:
+        - device_id: "{{ repeat.item }}"
+          domain: mobile_app
+          type: notify
+          title: !input mobile_title
+          message: !input mobile_message
 
-  # Restore previous volume if we had one
-  - choose:
-      - conditions: "{{ prev_volume is not none }}"
-        sequence:
-          - service: media_player.volume_set
-            target:
-              entity_id: !input media_player
-            data:
-              volume_level: "{{ prev_volume | float }}"
-
-  # Best-effort resume of previous stream:
-  # If it was playing and we have a media_content_id, ask the cast device to play it again.
-  - choose:
-      - conditions: "{{ prev_state == 'playing' and prev_media_id is not none }}"
-        sequence:
-          - service: media_player.play_media
-            target:
-              entity_id: !input media_player
-            data:
-              media_content_id: "{{ prev_media_id }}"
-              media_content_type: >
-                {{ prev_media_type if prev_media_type is not none else 'music' }}
 
