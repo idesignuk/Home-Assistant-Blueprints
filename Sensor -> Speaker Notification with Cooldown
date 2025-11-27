@@ -79,8 +79,10 @@ variables:
 trigger:
   - platform: state
     entity_id: !input trigger_sensor
-    from: "off"
     to: "on"
+  - platform: state
+    entity_id: !input trigger_sensor
+    to: "Detected"
 
 # Cooldown: only run if enough time has passed since last trigger
 condition:
