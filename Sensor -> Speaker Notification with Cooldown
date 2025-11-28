@@ -1,66 +1,93 @@
 blueprint:
-  name: Sensor -> TTS on Speakers + Mobile Notify (with Cooldown)
+  name: Sensor -> TTS on Speakers + Multi-Phone Notify (with Cooldown & DND)
   description: >
-    When a sensor indicates occupancy, speak a TTS message on selected
-    speakers and send a notification via a chosen notify service.
-    Includes a cooldown so it doesn't fire too often.
+    When a sensor indicates occupancy, play TTS on speakers and send mobile
+    notifications to up to 3 mobile_app notify services. Includes cooldown
+    and an optional Do Not Disturb time window.
   domain: automation
 
   input:
     trigger_sensor:
       name: Sensor to monitor
-      description: Occupancy or motion sensor to trigger the alert.
       selector:
         entity: {}
 
     speakers:
       name: Speaker(s)
-      description: One or more speakers / media_players to play the TTS.
       selector:
         entity:
           domain: media_player
           multiple: true
 
-    notify_service:
-      name: Notify service
-      description: >
-        The notify service to use for mobile alerts, e.g.
-        'notify.mobile_app_jamies_iphone' or a group like 'notify.family'.
-      default: "notify.notify"
+    notify_service_1:
+      name: Notify Service 1
+      description: First mobile_app notify service (e.g. notify.mobile_app_jamie_iphone_15_pro)
+      default: ""
+      selector:
+        text: {}
+
+    notify_service_2:
+      name: Notify Service 2
+      description: Optional second notify service
+      default: ""
+      selector:
+        text: {}
+
+    notify_service_3:
+      name: Notify Service 3
+      description: Optional third notify service
+      default: ""
       selector:
         text: {}
 
     cooldown_minutes:
       name: Cooldown (minutes)
-      description: Minimum time between alerts.
       default: 5
       selector:
         number:
           min: 0
           max: 1440
           unit_of_measurement: minutes
-          step: 1
 
     tts_message:
       name: TTS Message
-      description: Message to speak on the speakers (templating allowed).
       default: "Movement detected by {{ trigger.to_state.name }}."
       selector:
         text: {}
 
     mobile_title:
-      name: Mobile notification title
-      description: Title for the push notification.
-      default: "Home Assistant alert"
+      name: Notification Title
+      default: "Home Assistant Alert"
       selector:
         text: {}
 
     mobile_message:
-      name: Mobile notification body
-      description: Message body for the push notification (templating allowed).
+      name: Notification Message
       default: "Movement detected by {{ trigger.to_state.name }}."
       selector:
         text: {}
+
+    dnd_enabled:
+      name: Enable Do Not Disturb
+      description: >
+        If enabled, no TTS or notifications will be sent during the DND window.
+      default: true
+      selector:
+        boolean: {}
+
+    dnd_start_time:
+      name: DND start time
+      description: Time when Do Not Disturb starts (default 23:00).
+      default: "23:00:00"
+      selector:
+        time: {}
+
+    dnd_end_time:
+      name: DND end time
+      description: Time when Do Not Disturb ends (default 07:00).
+      default: "07:00:00"
+      selector:
+        time: {}
 
 mode: single
 max_exceeded: silent
@@ -69,19 +96,28 @@ variables:
   cooldown_minutes: !input cooldown_minutes
   cooldown_secs: "{{ (cooldown_minutes | int(0)) * 60 }}"
 
+  service_1: !input notify_service_1
+  service_2: !input notify_service_2
+  service_3: !input notify_service_3
+
+  dnd_enabled_var: !input dnd_enabled
+  dnd_start_str: !input dnd_start_time
+  dnd_end_str: !input dnd_end_time
+
 trigger:
   - platform: state
     entity_id: !input trigger_sensor
 
-# Only continue when:
-# 1) New state implies occupancy (on/detected/motion/etc.)
-# 2) Cooldown has elapsed since last run
+# Conditions:
+# 1) Sensor must be in an "occupied" state
+# 2) Cooldown must have elapsed since last run
+# 3) If DND enabled, current time must be OUTSIDE the DND window
 condition:
+  # Occupancy + cooldown
   - condition: template
     value_template: >
       {% set new = trigger.to_state.state | lower %}
-      {% set occupied = ['on', 'detected', 'motion', 'occupied', 'person'] %}
-      {% if new not in occupied %}
+      {% if new not in ['on','detected','motion','occupied','person'] %}
         false
       {% else %}
         {% set lt = state_attr(this.entity_id, 'last_triggered') %}
@@ -92,16 +128,59 @@ condition:
         {% endif %}
       {% endif %}
 
+  # Do Not Disturb window
+  - condition: template
+    value_template: >
+      {% if not dnd_enabled_var %}
+        true
+      {% else %}
+        {# Convert times (HH:MM:SS) to minutes since midnight #}
+        {% set n = now().hour * 60 + now().minute %}
+        {% set s_parts = dnd_start_str.split(':') %}
+        {% set e_parts = dnd_end_str.split(':') %}
+        {% set s = (s_parts[0] | int) * 60 + (s_parts[1] | int) %}
+        {% set e = (e_parts[0] | int) * 60 + (e_parts[1] | int) %}
+
+        {# True when current time is OUTSIDE the DND window #}
+        {% if s < e %}
+          {{ not (n >= s and n < e) }}
+        {% else %}
+          {{ not (n >= s or n < e) }}
+        {% endif %}
+      {% endif %}
+
 action:
-  # 1) Speak TTS on the selected speakers
+
+  # TTS
   - service: tts.cloud_say
     target:
       entity_id: !input speakers
     data:
       message: !input tts_message
 
-  # 2) Send mobile notification via the chosen notify service
-  - service: !input notify_service
-    data:
-      title: !input mobile_title
-      message: !input mobile_message
+  # Notify Jamie (service 1)
+  - choose:
+      - conditions: "{{ service_1 != '' }}"
+        sequence:
+          - service: "{{ service_1 }}"
+            data:
+              title: !input mobile_title
+              message: !input mobile_message
+
+  # Notify Dawn (service 2)
+  - choose:
+      - conditions: "{{ service_2 != '' }}"
+        sequence:
+          - service: "{{ service_2 }}"
+            data:
+              title: !input mobile_title
+              message: !input mobile_message
+
+  # Notify 3rd device (if provided)
+  - choose:
+      - conditions: "{{ service_3 != '' }}"
+        sequence:
+          - service: "{{ service_3 }}"
+            data:
+              title: !input mobile_title
+              message: !input mobile_message
