@@ -1,9 +1,9 @@
 blueprint:
-  name: Sensor -> TTS on Speakers + Mobile Push (with Cooldown)
+  name: Sensor -> TTS on Speakers + Mobile Notify (with Cooldown)
   description: >
     When a sensor indicates occupancy, speak a TTS message on selected
-    speakers and send notifications to selected phones. Includes a cooldown
-    so it doesn't fire too often.
+    speakers and send a notification via a chosen notify service.
+    Includes a cooldown so it doesn't fire too often.
   domain: automation
 
   input:
@@ -21,13 +21,14 @@ blueprint:
           domain: media_player
           multiple: true
 
-    notify_devices:
-      name: Phones to notify
-      description: Phones with the Home Assistant app (mobile_app) to send push alerts to.
+    notify_service:
+      name: Notify service
+      description: >
+        The notify service to use for mobile alerts, e.g.
+        'notify.mobile_app_jamies_iphone' or a group like 'notify.family'.
+      default: "notify.notify"
       selector:
-        device:
-          integration: mobile_app
-          multiple: true
+        text: {}
 
     cooldown_minutes:
       name: Cooldown (minutes)
@@ -99,12 +100,8 @@ action:
     data:
       message: !input tts_message
 
-  # 2) Send push notifications to the selected phones (all at once)
-  - device_id: !input notify_devices
-    domain: mobile_app
-    type: notify
-    title: !input mobile_title
-    message: !input mobile_message
-
-
-
+  # 2) Send mobile notification via the chosen notify service
+  - service: !input notify_service
+    data:
+      title: !input mobile_title
+      message: !input mobile_message
