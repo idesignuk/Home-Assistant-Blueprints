@@ -99,14 +99,12 @@ action:
     data:
       message: !input tts_message
 
-  # 2) Send push notifications to the selected phones
-  - repeat:
-      for_each: !input notify_devices
-      sequence:
-        - device_id: "{{ repeat.item }}"
-          domain: mobile_app
-          type: notify
-          title: !input mobile_title
-          message: !input mobile_message
+  # 2) Send push notifications to the selected phones (all at once)
+  - device_id: !input notify_devices
+    domain: mobile_app
+    type: notify
+    title: !input mobile_title
+    message: !input mobile_message
+
 
 
