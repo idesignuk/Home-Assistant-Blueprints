@@ -1,0 +1,104 @@
+blueprint:
+  name: UFH pump – follow Heatmiser & hall temperature
+  description: >
+    Controls an underfloor heating pump based on Heatmiser heating state,
+    hall temperature, connectivity, and battery status.
+    Pump turns ON only when:
+      - Hall temp is below the target
+      - Heatmiser climate is actively heating (hvac_action == 'heating')
+      - Heating connectivity sensor is ON
+      - Hall sensor battery is NOT low
+    Otherwise, pump turns OFF.
+  domain: automation
+  input:
+    climate_entity:
+      name: Heatmiser climate entity
+      description: Typically climate.heating
+      selector:
+        entity:
+          domain: climate
+
+    temp_sensor:
+      name: Hall temperature sensor
+      description: e.g. sensor.hall_down_motion_sensor_temperature
+      selector:
+        entity:
+          domain: sensor
+
+    connectivity_sensor:
+      name: Heating connectivity binary sensor
+      description: e.g. binary_sensor.heating_connectivity
+      selector:
+        entity:
+          domain: binary_sensor
+
+    battery_low_sensor:
+      name: Hall sensor battery-low binary sensor
+      description: e.g. binary_sensor.hall_down_motion_sensor_battery_low (on = low)
+      selector:
+        entity:
+          domain: binary_sensor
+
+    pump_switch:
+      name: UFH pump switch
+      description: e.g. switch.underfloor_pump_hall
+      selector:
+        entity:
+          domain: switch
+
+    target_temp:
+      name: Target hall temperature (°C)
+      description: Pump runs when hall is below this temperature.
+      default: 21
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+
+mode: single
+max_exceeded: silent
+
+variables:
+  climate_entity: !input climate_entity
+  temp_sensor: !input temp_sensor
+  connectivity_sensor: !input connectivity_sensor
+  battery_low_sensor: !input battery_low_sensor
+  pump_switch: !input pump_switch
+  target_temp: !input target_temp
+
+trigger:
+  # Any relevant state change should cause a re-evaluation
+  - platform: state
+    entity_id: !input temp_sensor
+  - platform: state
+    entity_id: !input climate_entity
+  - platform: state
+    entity_id: !input connectivity_sensor
+  - platform: state
+    entity_id: !input battery_low_sensor
+
+action:
+  - choose:
+      # --- CASE: All conditions OK -> TURN PUMP ON ---
+      - conditions:
+          - condition: template
+            value_template: >
+              {% set temp = states(temp_sensor) | float(0) %}
+              {% set hvac = state_attr(climate_entity, 'hvac_action') %}
+              {% set connectivity_ok = is_state(connectivity_sensor, 'on') %}
+              {% set battery_ok = is_state(battery_low_sensor, 'off') %}
+              {{ temp < target_temp
+                 and hvac == 'heating'
+                 and connectivity_ok
+                 and battery_ok }}
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: "{{ pump_switch }}"
+    # --- DEFAULT: Anything else -> TURN PUMP OFF ---
+    default:
+      - service: switch.turn_off
+        target:
+          entity_id: "{{ pump_switch }}"
